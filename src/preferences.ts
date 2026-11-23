@@ -2,6 +2,7 @@ import type { SourceKind, TargetKind, Appearance } from "./titles";
 import { headingLevels, type HeadingLevel } from "./headings";
 export interface Preferences {
   matchTitle: boolean;
+  matchBody: boolean;
   headingLevels: HeadingLevel[];
   targets: TargetKind[];
   sources: SourceKind[];
@@ -12,6 +13,7 @@ export const kinds = ["article", "document", "card"] as const;
 export const labels = { article: "文章", document: "项目文档", card: "卡片" };
 export const defaults: Preferences = {
   matchTitle: true,
+  matchBody: false,
   headingLevels: [],
   targets: ["article", "document"],
   sources: ["article", "document"],
@@ -30,7 +32,8 @@ export function readPreferences(value: unknown): Preferences {
     level => Array.isArray(data.headingLevels) && data.headingLevels.includes(level)
   );
   return {
-    matchTitle: data.matchTitle !== false || !levels.length,
+    matchTitle: data.matchTitle !== false || (!levels.length && data.matchBody !== true),
+    matchBody: data.matchBody === true,
     headingLevels: levels,
     targets: targets.length ? targets : defaults.targets,
     sources: sources.length ? sources : defaults.sources,

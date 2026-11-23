@@ -5,6 +5,6 @@
   "categories": ["editor"],
   "keywords": ["虚拟链接", "标题", "知识回顾"],
   "permissions": ["articles:read", "documents:read", "cards:read"],
-  "version": "0.2.0",
+  "version": "0.3.0",
   "targets": { "desktop": { "minAppVersion": "0.66.1" } }
 }

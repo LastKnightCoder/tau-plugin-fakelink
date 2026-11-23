@@ -58,12 +58,12 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
         targets,
       }))}
       <fieldset disabled={saving}>
-        <legend>匹配哪些标题</legend>
+        <legend>匹配方式</legend>
         <label>
           <input
             type="checkbox"
             checked={preferences.matchTitle}
-            disabled={!preferences.headingLevels.length}
+            disabled={!preferences.headingLevels.length && !preferences.matchBody}
             onChange={event => void save({ ...preferences, matchTitle: event.target.checked })}
           />
           内容标题
@@ -75,6 +75,7 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
               checked={preferences.headingLevels.includes(level)}
               disabled={
                 !preferences.matchTitle &&
+                !preferences.matchBody &&
                 preferences.headingLevels.length === 1 &&
                 preferences.headingLevels[0] === level
               }
@@ -90,6 +91,24 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
             H{level}
           </label>
         ))}
+        <label>
+          <input
+            type="checkbox"
+            checked={preferences.matchBody}
+            disabled={!preferences.matchTitle && !preferences.headingLevels.length}
+            onChange={event => {
+              const enabled = event.target.checked;
+              void save({
+                ...preferences,
+                matchBody: enabled,
+                sources: enabled
+                  ? [...new Set([...preferences.sources, "card" as const])]
+                  : preferences.sources,
+              });
+            }}
+          />
+          卡片正文短语
+        </label>
       </fieldset>
       {choices("在哪些正文显示", kinds, preferences.sources, sources => ({
         ...preferences,
@@ -124,7 +143,7 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
         <div role="alert">
           {runtime.error}{" "}
           <Button disabled={saving} onClick={() => void runtime.rebuild().catch(() => {})}>
-            重新读取标题
+            重新建立索引
           </Button>
         </div>
       )}

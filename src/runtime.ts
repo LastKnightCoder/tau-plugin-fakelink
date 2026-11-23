@@ -1,3 +1,5 @@
+import { BodyLibrary } from "./body-library";
+import { passagesOf, type BodyHit, type Passage } from "./body-index";
 import { readHeadings } from "./headings";
 import type {
   PluginContext,
@@ -23,6 +25,7 @@ function toTarget(kind: TargetKind, row: PluginArticle | PluginDocument | null):
 
 export class FakeLink {
   private index = new TitleIndex();
+  private body: BodyLibrary;
   private handle?: PluginTextDecorationHandle;
   private pending = Promise.resolve();
   private listeners = new Set<() => void>();
@@ -32,8 +35,24 @@ export class FakeLink {
   constructor(
     readonly context: PluginContext,
     public preferences: Preferences,
-    private readonly choose: (title: string, source: Source) => Promise<void>
-  ) {}
+    private readonly choose: (title: string, source: Source, body?: boolean) => Promise<void>
+  ) {
+    this.body = new BodyLibrary(
+      context,
+      () => {
+        this.handle?.invalidate();
+        this.notify();
+      },
+      error => this.report(error)
+    );
+  }
+
+  private report(error: unknown) {
+    if (!this.context.signal.aborted) {
+      this.error = error instanceof Error ? error.message : String(error);
+      this.notify();
+    }
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -53,15 +72,14 @@ export class FakeLink {
       return work();
     });
     this.pending = task.catch(error => {
-      if (!this.context.signal.aborted) {
-        this.error = error instanceof Error ? error.message : String(error);
-        this.notify();
-      }
+      this.report(error);
     });
     return task;
   }
 
   private async readableKinds() {
+    if (!this.preferences.matchTitle && !this.preferences.headingLevels.length)
+      return new Set<TargetKind>();
     const kinds = await Promise.all(
       this.preferences.targets.map(async kind =>
         (await this.context.permissions.query(`${kind}s:read`)) === "granted" ? kind : null
@@ -85,6 +103,76 @@ export class FakeLink {
       }
     }
     return targets;
+  }
+
+  private async canReadBody() {
+    return (
+      this.preferences.matchBody &&
+      (await this.context.permissions.query("cards:read")) === "granted"
+    );
+  }
+
+  async sourcePassages(source: Source): Promise<Passage[]> {
+    if (
+      !this.preferences.sources.includes(source.kind) ||
+      !(await this.canReadBody()) ||
+      (await this.context.permissions.query(`${source.kind}s:read`)) !== "granted"
+    )
+      return [];
+    const row = await this.context.data[
+      source.kind === "card" ? "cards" : source.kind === "article" ? "articles" : "documents"
+    ].get(source.id);
+    if (!row?.contentRef) return [];
+    const body = await this.context.content.read(row.contentRef, { format: "nodes" });
+    return passagesOf(body?.nodes ?? []);
+  }
+
+  async bodyHits(
+    source: Source,
+    passages: Passage[] | string,
+    signal?: AbortSignal
+  ): Promise<BodyHit[]> {
+    if (
+      !(await this.canReadBody()) ||
+      !this.preferences.sources.includes(source.kind) ||
+      (await this.context.permissions.query(`${source.kind}s:read`)) !== "granted"
+    )
+      return [];
+    if (typeof passages === "string")
+      return this.body.index.hits(passages, source, this.preferences.wordBoundaries);
+    const cards = new Map<string, BodyHit>();
+    let sliceStarted = performance.now();
+    for (const { text } of passages) {
+      if (performance.now() - sliceStarted > 8) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        sliceStarted = performance.now();
+      }
+      if (signal?.aborted || this.context.signal.aborted || !this.preferences.matchBody) return [];
+      for (const { phrase } of this.body.index.match(
+        text,
+        source,
+        this.preferences.wordBoundaries
+      )) {
+        for (const hit of this.body.index.hits(phrase, source, this.preferences.wordBoundaries)) {
+          const previous = cards.get(hit.id);
+          if (!previous || hit.phrase.length > previous.phrase.length) cards.set(hit.id, hit);
+        }
+      }
+    }
+    return [...cards.values()].sort(
+      (a, b) => b.phrase.length - a.phrase.length || b.createdAt - a.createdAt
+    );
+  }
+
+  async openCard(hit: BodyHit) {
+    if (!(await this.canReadBody())) throw new Error("请先开启卡片正文匹配并允许读取卡片。");
+    const card = await this.context.data.cards.get(hit.id);
+    if (!card || card.createdAt !== hit.createdAt) throw new Error("这张卡片已删除。");
+    const body = await this.context.content.read(card.contentRef, { format: "nodes" });
+    const passages = passagesOf(body?.nodes ?? []).filter(p => p.text.includes(hit.phrase));
+    const current = passages.find(p => p.block === hit.block) ?? passages[0];
+    if (!current) throw new Error("卡片中的这段文字已更改。");
+    await this.context.app.open({ kind: "card", id: hit.id }, { at: { block: current.block } });
   }
 
   async candidates(title: string, source: Source) {
@@ -140,17 +228,25 @@ export class FakeLink {
         next.targets.join() !== this.preferences.targets.join() ||
         next.matchTitle !== this.preferences.matchTitle ||
         next.headingLevels.join() !== this.preferences.headingLevels.join();
+      const bodyChanged = next.matchBody !== this.preferences.matchBody;
       const needsRegistration =
         !this.handle || next.sources.join() !== this.preferences.sources.join();
-      if (needsRegistration || needsIndex) {
-        const kinds = [...new Set([...next.targets, ...next.sources])];
-        if (!(await this.context.permissions.request(kinds.map(kind => `${kind}s:read` as const))))
+      if (needsRegistration || needsIndex || (bodyChanged && next.matchBody)) {
+        const kinds = new Set(next.sources);
+        if (next.matchTitle || next.headingLevels.length)
+          for (const kind of next.targets) kinds.add(kind);
+        if (next.matchBody) kinds.add("card");
+        if (
+          !(await this.context.permissions.request(
+            [...kinds].map(kind => `${kind}s:read` as const)
+          ))
+        )
           throw new Error("请在插件权限中允许读取所选内容，或在设置中缩小范围。");
       }
       let index = this.index;
       if (needsIndex) {
         index = new TitleIndex();
-        for (const kind of next.targets) {
+        for (const kind of next.matchTitle || next.headingLevels.length ? next.targets : []) {
           let cursor: string | undefined;
           do {
             this.context.signal.throwIfAborted();
@@ -174,15 +270,39 @@ export class FakeLink {
             getDecorations: async ({ source, text }, signal) => {
               const allowed = await this.readableKinds();
               if (signal.aborted) return [];
-              return this.index.match(
-                text,
-                source,
-                allowed,
-                this.preferences.appearance,
-                this.preferences.wordBoundaries
-              );
+              const titles = this.index
+                .match(
+                  text,
+                  source,
+                  allowed,
+                  this.preferences.appearance,
+                  this.preferences.wordBoundaries
+                )
+                .map(hit => ({ ...hit, key: JSON.stringify(["title", hit.key]) }));
+              if (!(await this.canReadBody()) || signal.aborted) return titles;
+              const body = this.body.index.match(text, source, this.preferences.wordBoundaries);
+              const titleCount = titles.length;
+              let nextTitle = 0;
+              for (const hit of body) {
+                while (nextTitle < titleCount && titles[nextTitle].end <= hit.start) nextTitle++;
+                if (nextTitle < titleCount && titles[nextTitle].start < hit.end) continue;
+                titles.push({
+                  start: hit.start,
+                  end: hit.end,
+                  key: JSON.stringify(["body", hit.phrase]),
+                  appearance: this.preferences.appearance,
+                });
+              }
+              return titles;
             },
-            onActivate: ({ key, source }) => this.open(key, source),
+            onActivate: async ({ key, source }) => {
+              const [kind, term] = JSON.parse(key) as [string, string];
+              if (kind === "title") return this.open(term, source);
+              const hits = await this.bodyHits(source, term);
+              if (!hits.length) throw new Error("匹配的卡片已变化。");
+              if (hits.length === 1) return this.openCard(hits[0]);
+              return this.choose(term, source, true);
+            },
           })
         : undefined;
       try {
@@ -196,6 +316,8 @@ export class FakeLink {
       this.index = index;
       this.preferences = next;
       this.handle = handle ?? previous;
+      if (next.matchBody && (bodyChanged || force || !previous)) this.body.start();
+      else if (!next.matchBody && bodyChanged) this.body.stop();
       if (handle) await previous?.dispose();
       this.handle?.invalidate();
       this.error = "";
@@ -206,13 +328,25 @@ export class FakeLink {
   changed(event: PluginDomainEvent) {
     if (event.type === "workspace.reset") {
       this.index = new TitleIndex();
+      this.body.stop();
+      this.notify();
       this.handle?.invalidate();
       void this.rebuild().catch(() => {});
       return;
     }
+    if (event.type.startsWith("card.")) {
+      if (event.id && this.preferences.matchBody)
+        void this.body.update(event.id).catch(error => this.report(error));
+      return;
+    }
     void this.enqueue(async () => {
       const kind = event.type.startsWith("article.") ? "article" : "document";
-      if (!event.id || !this.preferences.targets.includes(kind)) return;
+      if (
+        !event.id ||
+        (!this.preferences.matchTitle && !this.preferences.headingLevels.length) ||
+        !this.preferences.targets.includes(kind)
+      )
+        return;
       // 事件是变更提示，重新读取可以处理事务回滚及同一编号的连续变化。
       const row = await reader(this.context, kind).get(event.id);
       this.context.signal.throwIfAborted();

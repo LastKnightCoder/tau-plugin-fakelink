@@ -1,6 +1,7 @@
 import { definePlugin, type PluginPageHandle } from "@tau/plugins";
 import { FakeLink } from "./runtime";
 import { readPreferences } from "./preferences";
+import { BodyResults, RelatedCards } from "./related-cards";
 import { Candidates, Settings } from "./views";
 import "./styles.css";
 
@@ -14,14 +15,34 @@ export default definePlugin({
         throw new Error("此版本的 Tau 尚未提供 FakeLink 需要的文字装饰能力。");
       const preferences = readPreferences(await context.storage.get("preferences"));
       let choices: PluginPageHandle;
-      const runtime = new FakeLink(context, preferences, (title, source) =>
-        choices.open({ title, ...source })
+      const runtime = new FakeLink(context, preferences, (title, source, body = false) =>
+        choices.open({ title, ...source, body })
       );
       choices = context.pages.register({
         id: "candidates",
-        title: "选择同名内容",
+        title: "相关内容",
         match: "params",
-        component: ({ params }) => <Candidates runtime={runtime} params={params} />,
+        component: ({ params }) =>
+          params.body === true ? (
+            <BodyResults
+              runtime={runtime}
+              source={{
+                kind:
+                  params.kind === "card" || params.kind === "document" ? params.kind : "article",
+                id: String(params.id),
+              }}
+              input={String(params.title)}
+            />
+          ) : (
+            <Candidates runtime={runtime} params={params} />
+          ),
+      });
+      context.views.registerEntityPanel({
+        id: "matching-cards",
+        kinds: ["card", "article", "document"],
+        component: ({ target }) => (
+          <RelatedCards key={target.kind + ":" + target.id} runtime={runtime} source={target} />
+        ),
       });
       const settings = context.settings.register({
         id: "preferences",
@@ -31,6 +52,9 @@ export default definePlugin({
       context.events.on(
         [
           "workspace.reset",
+          "card.created",
+          "card.updated",
+          "card.deleted",
           "article.created",
           "article.updated",
           "article.deleted",
@@ -42,7 +66,7 @@ export default definePlugin({
       );
       context.commands.register({
         id: "rebuild",
-        title: "FakeLink：重新读取标题",
+        title: "FakeLink：重新建立索引",
         run: async () => {
           await runtime.rebuild();
           return null;

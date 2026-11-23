@@ -43,3 +43,21 @@
 .tau-fakelink-candidates small {
   opacity: 0.75;
 }
+
+.tau-fakelink-related {
+  gap: 0.35rem;
+  margin-block: 0.75rem;
+}
+.tau-fakelink-related button {
+  height: auto;
+  white-space: normal;
+  text-align: start;
+  justify-content: start;
+}
+.tau-fakelink-related button:has(small) {
+  display: grid;
+  justify-items: start;
+}
+.tau-fakelink-related small {
+  opacity: 0.75;
+}
