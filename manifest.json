@@ -1,0 +1,10 @@
+{
+  "id": "tau.fakelink",
+  "name": "FakeLink",
+  "description": "在正文里点击文章或项目文档的标题，回到相关笔记。",
+  "categories": ["editor"],
+  "keywords": ["虚拟链接", "标题", "知识回顾"],
+  "permissions": ["articles:read", "documents:read", "cards:read"],
+  "version": "0.1.0",
+  "targets": { "desktop": { "minAppVersion": "0.66.1" } }
+}
