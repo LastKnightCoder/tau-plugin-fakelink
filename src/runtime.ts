@@ -1,5 +1,5 @@
-import { BodyLibrary } from "./body-library";
-import { passagesOf, type BodyHit, type Passage } from "./body-index";
+import { BodyLibrary, bodyReader } from "./body-library";
+import { passagesOf, type BodyHit } from "./body-index";
 import { readHeadings } from "./headings";
 import type {
   PluginContext,
@@ -8,9 +8,13 @@ import type {
   PluginEntityReader,
   PluginArticle,
   PluginDocument,
+  PluginTextDecoration,
+  PluginTextDecorationCandidate,
+  PluginTextDecorationActivation,
+  PluginDecorationPreviewTarget,
 } from "@tau/plugins";
 import { TitleIndex, type Source, type Target, type TargetKind } from "./titles";
-import { type Preferences } from "./preferences";
+import { labels, type Preferences } from "./preferences";
 
 const reader = (
   context: PluginContext,
@@ -21,6 +25,36 @@ const reader = (
 function toTarget(kind: TargetKind, row: PluginArticle | PluginDocument | null): Target | null {
   if (!row || ("kind" in row && !row.contentRef)) return null;
   return { kind, id: row.id, title: row.title.trim(), tags: row.tags, createdAt: row.createdAt };
+}
+
+const targetKey = (target: Target) =>
+  JSON.stringify([target.kind, target.id, target.createdAt, target.heading?.path ?? null]);
+
+function candidateOf(target: Target): PluginTextDecorationCandidate {
+  const where = target.heading
+    ? `${labels[target.kind]}《${target.title || "无标题"}》· H${target.heading.level}`
+    : labels[target.kind];
+  return {
+    key: targetKey(target),
+    title: target.heading?.text ?? (target.title || "无标题"),
+    description: [
+      where,
+      ...target.tags.map(tag => "#" + tag),
+      new Date(target.createdAt).toLocaleDateString(),
+    ].join(" · "),
+  };
+}
+
+// 只匹配到小标题时用淡色，和内容标题区分开。
+function describe(title: string, targets: readonly Target[]) {
+  const tone = targets.length && targets.every(target => target.heading) ? "muted" : undefined;
+  if (targets.length !== 1)
+    return { tone, label: `${targets.length} 个同名内容，点击选择` } as const;
+  const [target] = targets;
+  const label = target.heading
+    ? `跳到${labels[target.kind]}《${target.title || "无标题"}》的「${title}」`
+    : `打开${labels[target.kind]}《${title}》`;
+  return { tone, label } as const;
 }
 
 export class FakeLink {
@@ -34,8 +68,7 @@ export class FakeLink {
 
   constructor(
     readonly context: PluginContext,
-    public preferences: Preferences,
-    private readonly choose: (title: string, source: Source, body?: boolean) => Promise<void>
+    public preferences: Preferences
   ) {
     this.body = new BodyLibrary(
       context,
@@ -105,74 +138,43 @@ export class FakeLink {
     return targets;
   }
 
-  private async canReadBody() {
-    return (
-      this.preferences.matchBody &&
-      (await this.context.permissions.query("cards:read")) === "granted"
-    );
+  private async readableBodyKinds() {
+    const allowed = new Set<Source["kind"]>();
+    if (this.preferences.matchBody)
+      await Promise.all(
+        this.preferences.bodyTargets.map(async kind => {
+          if ((await this.context.permissions.query(`${kind}s:read`)) === "granted")
+            allowed.add(kind);
+        })
+      );
+    return allowed;
   }
 
-  async sourcePassages(source: Source): Promise<Passage[]> {
+  async bodyHits(source: Source, phrase: string): Promise<BodyHit[]> {
     if (
+      !this.preferences.matchBody ||
       !this.preferences.sources.includes(source.kind) ||
-      !(await this.canReadBody()) ||
       (await this.context.permissions.query(`${source.kind}s:read`)) !== "granted"
     )
       return [];
-    const row = await this.context.data[
-      source.kind === "card" ? "cards" : source.kind === "article" ? "articles" : "documents"
-    ].get(source.id);
-    if (!row?.contentRef) return [];
+    return this.body.index.hits(
+      phrase,
+      source,
+      this.preferences.wordBoundaries,
+      await this.readableBodyKinds()
+    );
+  }
+
+  async openBody(hit: BodyHit) {
+    if (!(await this.readableBodyKinds()).has(hit.kind))
+      throw new Error("目标内容不在已授权的正文收录范围内。");
+    const row = await bodyReader(this.context, hit.kind).get(hit.id);
+    if (!row?.contentRef || row.createdAt !== hit.createdAt) throw new Error("目标内容已删除。");
     const body = await this.context.content.read(row.contentRef, { format: "nodes" });
-    return passagesOf(body?.nodes ?? []);
-  }
-
-  async bodyHits(
-    source: Source,
-    passages: Passage[] | string,
-    signal?: AbortSignal
-  ): Promise<BodyHit[]> {
-    if (
-      !(await this.canReadBody()) ||
-      !this.preferences.sources.includes(source.kind) ||
-      (await this.context.permissions.query(`${source.kind}s:read`)) !== "granted"
-    )
-      return [];
-    if (typeof passages === "string")
-      return this.body.index.hits(passages, source, this.preferences.wordBoundaries);
-    const cards = new Map<string, BodyHit>();
-    let sliceStarted = performance.now();
-    for (const { text } of passages) {
-      if (performance.now() - sliceStarted > 8) {
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
-        sliceStarted = performance.now();
-      }
-      if (signal?.aborted || this.context.signal.aborted || !this.preferences.matchBody) return [];
-      for (const { phrase } of this.body.index.match(
-        text,
-        source,
-        this.preferences.wordBoundaries
-      )) {
-        for (const hit of this.body.index.hits(phrase, source, this.preferences.wordBoundaries)) {
-          const previous = cards.get(hit.id);
-          if (!previous || hit.phrase.length > previous.phrase.length) cards.set(hit.id, hit);
-        }
-      }
-    }
-    return [...cards.values()].sort(
-      (a, b) => b.phrase.length - a.phrase.length || b.createdAt - a.createdAt
-    );
-  }
-
-  async openCard(hit: BodyHit) {
-    if (!(await this.canReadBody())) throw new Error("请先开启卡片正文匹配并允许读取卡片。");
-    const card = await this.context.data.cards.get(hit.id);
-    if (!card || card.createdAt !== hit.createdAt) throw new Error("这张卡片已删除。");
-    const body = await this.context.content.read(card.contentRef, { format: "nodes" });
     const passages = passagesOf(body?.nodes ?? []).filter(p => p.text.includes(hit.phrase));
     const current = passages.find(p => p.block === hit.block) ?? passages[0];
-    if (!current) throw new Error("卡片中的这段文字已更改。");
-    await this.context.app.open({ kind: "card", id: hit.id }, { at: { block: current.block } });
+    if (!current) throw new Error("目标中的这段文字已更改。");
+    await this.context.app.open({ kind: hit.kind, id: hit.id }, { at: { block: current.block } });
   }
 
   async candidates(title: string, source: Source) {
@@ -180,18 +182,33 @@ export class FakeLink {
     return this.index.candidates(title, source, allowed);
   }
 
-  async open(title: string, source: Source, selected?: Target) {
-    const candidates = await this.candidates(title, source);
-    if (!selected && candidates.length > 1) return this.choose(title, source);
-    const chosen = selected ?? candidates[0];
-    if (
-      !chosen ||
-      !candidates.some(
-        item =>
-          item.kind === chosen.kind && item.id === chosen.id && item.createdAt === chosen.createdAt
-      )
-    )
-      throw new Error("这条标题已更改、被删除，或不在当前匹配范围内。");
+  private async options({ key, source }: PluginTextDecorationActivation) {
+    const [kind, term] = JSON.parse(key) as [string, string];
+    if (kind === "title") {
+      return (await this.candidates(term, source)).map(target => ({
+        candidate: candidateOf(target),
+        target: {
+          ref: { kind: target.kind, id: target.id },
+          ...(target.heading ? { at: { block: target.heading.block } } : {}),
+        } satisfies PluginDecorationPreviewTarget,
+        open: () => this.openTitle(term, target),
+      }));
+    }
+    return (await this.bodyHits(source, term)).map(hit => ({
+      candidate: {
+        key: JSON.stringify([hit.kind, hit.id, hit.createdAt]),
+        title: hit.title || labels[hit.kind],
+        description: `${labels[hit.kind]} · ${hit.excerpt}`,
+      },
+      target: {
+        ref: { kind: hit.kind, id: hit.id },
+        at: { block: hit.block },
+      } satisfies PluginDecorationPreviewTarget,
+      open: () => this.openBody(hit),
+    }));
+  }
+
+  private async openTitle(title: string, chosen: Target) {
     const ref = { kind: chosen.kind, id: chosen.id };
     const row = await reader(this.context, chosen.kind).get(chosen.id);
     if (!row || row.createdAt !== chosen.createdAt) throw new Error("目标已删除，请重新选择。");
@@ -228,14 +245,16 @@ export class FakeLink {
         next.targets.join() !== this.preferences.targets.join() ||
         next.matchTitle !== this.preferences.matchTitle ||
         next.headingLevels.join() !== this.preferences.headingLevels.join();
-      const bodyChanged = next.matchBody !== this.preferences.matchBody;
+      const bodyChanged =
+        next.matchBody !== this.preferences.matchBody ||
+        next.bodyTargets.join() !== this.preferences.bodyTargets.join();
       const needsRegistration =
         !this.handle || next.sources.join() !== this.preferences.sources.join();
       if (needsRegistration || needsIndex || (bodyChanged && next.matchBody)) {
         const kinds = new Set(next.sources);
         if (next.matchTitle || next.headingLevels.length)
           for (const kind of next.targets) kinds.add(kind);
-        if (next.matchBody) kinds.add("card");
+        if (next.matchBody) for (const kind of next.bodyTargets) kinds.add(kind);
         if (
           !(await this.context.permissions.request(
             [...kinds].map(kind => `${kind}s:read` as const)
@@ -270,7 +289,7 @@ export class FakeLink {
             getDecorations: async ({ source, text }, signal) => {
               const allowed = await this.readableKinds();
               if (signal.aborted) return [];
-              const titles = this.index
+              const titles: PluginTextDecoration[] = this.index
                 .match(
                   text,
                   source,
@@ -278,30 +297,71 @@ export class FakeLink {
                   this.preferences.appearance,
                   this.preferences.wordBoundaries
                 )
-                .map(hit => ({ ...hit, key: JSON.stringify(["title", hit.key]) }));
-              if (!(await this.canReadBody()) || signal.aborted) return titles;
-              const body = this.body.index.match(text, source, this.preferences.wordBoundaries);
+                .map(hit => ({
+                  ...hit,
+                  ...describe(hit.key, this.index.candidates(hit.key, source, allowed)),
+                  key: JSON.stringify(["title", hit.key]),
+                }));
+              const allowedBodies = await this.readableBodyKinds();
+              if (!allowedBodies.size || signal.aborted) return titles;
+              const body = this.body.index.match(
+                text,
+                source,
+                this.preferences.wordBoundaries,
+                allowedBodies
+              );
               const titleCount = titles.length;
               let nextTitle = 0;
+              const bodyLabels = new Map<string, string>();
               for (const hit of body) {
                 while (nextTitle < titleCount && titles[nextTitle].end <= hit.start) nextTitle++;
                 if (nextTitle < titleCount && titles[nextTitle].start < hit.end) continue;
+                let label = bodyLabels.get(hit.phrase);
+                if (!label) {
+                  const count = this.body.index.hits(
+                    hit.phrase,
+                    source,
+                    this.preferences.wordBoundaries,
+                    allowedBodies
+                  ).length;
+                  if (!count) continue;
+                  label =
+                    count > 1
+                      ? `匹配到 ${count} 处内容，点击选择`
+                      : `预览「${hit.phrase}」所在的段落`;
+                  bodyLabels.set(hit.phrase, label);
+                }
                 titles.push({
                   start: hit.start,
                   end: hit.end,
                   key: JSON.stringify(["body", hit.phrase]),
                   appearance: this.preferences.appearance,
+                  label,
                 });
               }
               return titles;
             },
-            onActivate: async ({ key, source }) => {
-              const [kind, term] = JSON.parse(key) as [string, string];
-              if (kind === "title") return this.open(term, source);
-              const hits = await this.bodyHits(source, term);
-              if (!hits.length) throw new Error("匹配的卡片已变化。");
-              if (hits.length === 1) return this.openCard(hits[0]);
-              return this.choose(term, source, true);
+            getPreview: async (action, signal) => {
+              const options = await this.options(action);
+              if (signal.aborted) return;
+              const selected =
+                action.choice === undefined
+                  ? options.length === 1
+                    ? options[0]
+                    : undefined
+                  : options.find(item => item.candidate.key === action.choice);
+              return selected?.target;
+            },
+            onActivate: async action => {
+              const options = await this.options(action);
+              if (action.choice === undefined && options.length > 1)
+                return options.map(item => item.candidate);
+              const selected =
+                action.choice === undefined
+                  ? options[0]
+                  : options.find(item => item.candidate.key === action.choice);
+              if (!selected) throw new Error("匹配的内容已变化，请重新选择。");
+              await selected.open();
             },
           })
         : undefined;
@@ -316,7 +376,7 @@ export class FakeLink {
       this.index = index;
       this.preferences = next;
       this.handle = handle ?? previous;
-      if (next.matchBody && (bodyChanged || force || !previous)) this.body.start();
+      if (next.matchBody && (bodyChanged || force || !previous)) this.body.start(next.bodyTargets);
       else if (!next.matchBody && bodyChanged) this.body.stop();
       if (handle) await previous?.dispose();
       this.handle?.invalidate();
@@ -334,13 +394,15 @@ export class FakeLink {
       void this.rebuild().catch(() => {});
       return;
     }
-    if (event.type.startsWith("card.")) {
-      if (event.id && this.preferences.matchBody)
-        void this.body.update(event.id).catch(error => this.report(error));
-      return;
-    }
+    const kind = event.type.startsWith("card.")
+      ? "card"
+      : event.type.startsWith("article.")
+        ? "article"
+        : "document";
+    if (event.id && this.preferences.matchBody && this.preferences.bodyTargets.includes(kind))
+      void this.body.update(kind, event.id).catch(error => this.report(error));
+    if (kind === "card") return;
     void this.enqueue(async () => {
-      const kind = event.type.startsWith("article.") ? "article" : "document";
       if (
         !event.id ||
         (!this.preferences.matchTitle && !this.preferences.headingLevels.length) ||

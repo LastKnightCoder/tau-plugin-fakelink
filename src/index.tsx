@@ -1,8 +1,7 @@
-import { definePlugin, type PluginPageHandle } from "@tau/plugins";
+import { definePlugin } from "@tau/plugins";
 import { FakeLink } from "./runtime";
 import { readPreferences } from "./preferences";
-import { BodyResults, RelatedCards } from "./related-cards";
-import { Candidates, Settings } from "./views";
+import { Settings } from "./views";
 import "./styles.css";
 
 declare const __PLUGIN_META__: { id: string; name: string; version: string };
@@ -14,36 +13,7 @@ export default definePlugin({
       if (!context.textDecorations)
         throw new Error("此版本的 Tau 尚未提供 FakeLink 需要的文字装饰能力。");
       const preferences = readPreferences(await context.storage.get("preferences"));
-      let choices: PluginPageHandle;
-      const runtime = new FakeLink(context, preferences, (title, source, body = false) =>
-        choices.open({ title, ...source, body })
-      );
-      choices = context.pages.register({
-        id: "candidates",
-        title: "相关内容",
-        match: "params",
-        component: ({ params }) =>
-          params.body === true ? (
-            <BodyResults
-              runtime={runtime}
-              source={{
-                kind:
-                  params.kind === "card" || params.kind === "document" ? params.kind : "article",
-                id: String(params.id),
-              }}
-              input={String(params.title)}
-            />
-          ) : (
-            <Candidates runtime={runtime} params={params} />
-          ),
-      });
-      context.views.registerEntityPanel({
-        id: "matching-cards",
-        kinds: ["card", "article", "document"],
-        component: ({ target }) => (
-          <RelatedCards key={target.kind + ":" + target.id} runtime={runtime} source={target} />
-        ),
-      });
+      const runtime = new FakeLink(context, preferences);
       const settings = context.settings.register({
         id: "preferences",
         title: "虚拟链接",

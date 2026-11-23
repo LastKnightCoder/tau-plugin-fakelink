@@ -1,15 +1,17 @@
-import type { Source } from "./titles";
+import type { Source, SourceKind } from "./titles";
 
 export interface Passage {
   block: number;
   text: string;
 }
-export interface IndexedCard {
-  id: string;
+export interface IndexedBody {
+  title: string;
   createdAt: number;
   passages: Passage[];
 }
 export interface BodyHit {
+  kind: SourceKind;
+  title: string;
   phrase: string;
   id: string;
   createdAt: number;
@@ -71,6 +73,8 @@ const stop = new Set([
 ]);
 
 interface Line {
+  kind: SourceKind;
+  title: string;
   id: string;
   createdAt: number;
   passage: Passage;
@@ -79,22 +83,23 @@ interface Line {
 
 export class BodyIndex {
   private postings = new Map<string, Set<Line>>();
-  private cards = new Map<string, Line[]>();
+  private entries = new Map<string, Line[]>();
 
-  update(id: string, card: IndexedCard | null) {
-    for (const line of this.cards.get(id) ?? []) {
+  update(ref: Source, body: IndexedBody | null) {
+    const key = ref.kind + ":" + ref.id;
+    for (const line of this.entries.get(key) ?? []) {
       for (const [, seed] of seeds(line.text)) {
         const bucket = this.postings.get(seed);
         if (bucket?.delete(line) && !bucket.size) this.postings.delete(seed);
       }
     }
-    this.cards.delete(id);
-    if (!card) return;
+    this.entries.delete(key);
+    if (!body) return;
     const lines: Line[] = [];
-    for (const passage of card.passages) {
+    for (const passage of body.passages) {
       for (const [text] of runs(passage.text)) {
         if (text.length < 4) continue;
-        const line = { id: card.id, createdAt: card.createdAt, passage, text };
+        const line = { ...ref, title: body.title, createdAt: body.createdAt, passage, text };
         lines.push(line);
         for (const [, seed] of seeds(text)) {
           let bucket = this.postings.get(seed);
@@ -106,7 +111,7 @@ export class BodyIndex {
         }
       }
     }
-    this.cards.set(id, lines);
+    this.entries.set(key, lines);
   }
 
   private anchors(phrase: string) {
@@ -119,13 +124,20 @@ export class BodyIndex {
     return smallest && smallest.size <= maxPostings ? smallest : undefined;
   }
 
-  hits(phrase: string, source: Source, wordBoundaries: boolean): BodyHit[] {
-    const cards = new Map<string, BodyHit>();
+  hits(
+    phrase: string,
+    source: Source,
+    wordBoundaries: boolean,
+    allowed: ReadonlySet<SourceKind>
+  ): BodyHit[] {
+    const targets = new Map<string, BodyHit>();
     for (const line of this.anchors(phrase) ?? []) {
-      const { id, createdAt, passage } = line;
+      const { kind, id, title, createdAt, passage } = line;
+      const key = kind + ":" + id;
       if (
-        (source.kind === "card" && source.id === id) ||
-        cards.has(id) ||
+        !allowed.has(kind) ||
+        (source.kind === kind && source.id === id) ||
+        targets.has(key) ||
         !line.text.includes(phrase)
       )
         continue;
@@ -139,7 +151,9 @@ export class BodyIndex {
         offset = line.text.indexOf(phrase, offset + 1);
       if (offset < 0) continue;
       const at = passage.text.indexOf(line.text) + offset;
-      cards.set(id, {
+      targets.set(key, {
+        kind,
+        title,
         phrase,
         id,
         createdAt,
@@ -147,10 +161,10 @@ export class BodyIndex {
         excerpt: passage.text.slice(Math.max(0, at - 35), at + phrase.length + 45),
       });
     }
-    return [...cards.values()].sort((a, b) => b.createdAt - a.createdAt);
+    return [...targets.values()].sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  match(text: string, source: Source, words: boolean) {
+  match(text: string, source: Source, words: boolean, allowed: ReadonlySet<SourceKind>) {
     const ranges: { start: number; end: number; phrase: string }[] = [];
     for (const run of runs(text)) {
       const value = run[0];
@@ -165,7 +179,8 @@ export class BodyIndex {
         let bestStart = at,
           bestEnd = at;
         for (const line of bucket) {
-          if (source.kind === "card" && source.id === line.id) continue;
+          if (!allowed.has(line.kind) || (source.kind === line.kind && source.id === line.id))
+            continue;
           let pos = -1;
           // 重复模板或超长正文中的同一锚点只取前几处校验，限制一次渲染的开销。
           for (let count = 0; count < 8; count++) {

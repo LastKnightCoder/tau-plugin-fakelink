@@ -10,7 +10,7 @@ export type Target = {
   tags: string[];
   createdAt: number;
 };
-export type Appearance = "link" | "highlight";
+export type Appearance = "reference" | "ghost" | "marker" | "tint";
 
 interface Branch {
   next: Map<string, Branch>;

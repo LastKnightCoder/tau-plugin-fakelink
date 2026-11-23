@@ -1,63 +1,159 @@
 .tau-fakelink {
   display: grid;
-  gap: 1rem;
-  color: inherit;
-}
-.tau-fakelink fieldset {
-  border: 0;
+  gap: 22px;
+  min-width: 0;
   margin: 0;
   padding: 0;
-}
-.tau-fakelink legend {
-  margin-bottom: 0.4rem;
-  font-weight: 600;
-}
-.tau-fakelink label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-inline-end: 1rem;
-}
-.tau-fakelink select {
-  font: inherit;
+  border: 0;
   color: inherit;
-  background: var(--tau-surface);
 }
-.tau-fakelink-candidates {
-  max-width: 44rem;
-  margin: 2rem auto;
-  padding-inline: 1.5rem;
-}
-.tau-fakelink-candidates h2 {
-  font-size: 1.35rem;
+.tau-fakelink-group h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
   font-weight: 600;
+  color: var(--tau-ink-1);
 }
-.tau-fakelink-candidates button {
-  height: auto;
-  display: grid;
-  justify-content: start;
-  justify-items: start;
-  text-align: start;
-  white-space: normal;
+.tau-fakelink-hint {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tau-ink-3);
 }
-.tau-fakelink-candidates small {
-  opacity: 0.75;
+.tau-fakelink-row .tau-fakelink-hint {
+  margin: 2px 0 0;
 }
 
-.tau-fakelink-related {
-  gap: 0.35rem;
-  margin-block: 0.75rem;
-}
-.tau-fakelink-related button {
-  height: auto;
-  white-space: normal;
-  text-align: start;
-  justify-content: start;
-}
-.tau-fakelink-related button:has(small) {
+.tau-fakelink-looks {
   display: grid;
-  justify-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
 }
-.tau-fakelink-related small {
-  opacity: 0.75;
+.tau-fakelink-look {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px 9px;
+  text-align: start;
+  font: inherit;
+  color: inherit;
+  background: var(--tau-bg-surface);
+  border: 1px solid var(--tau-line-1);
+  border-radius: 10px;
+  cursor: pointer;
+  transition:
+    border-color 0.14s,
+    box-shadow 0.14s,
+    background-color 0.14s;
+}
+.tau-fakelink-look:hover {
+  background: var(--tau-bg-hover);
+}
+.tau-fakelink-look:focus-visible {
+  outline: none;
+  box-shadow: var(--tau-focus-ring);
+}
+.tau-fakelink-look[aria-checked="true"] {
+  border-color: var(--tau-accent);
+  box-shadow: inset 0 0 0 0.5px var(--tau-accent);
+}
+.tau-fakelink-preview {
+  margin-bottom: 4px;
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--tau-ink-1);
+  white-space: nowrap;
+}
+.tau-fakelink-look-name {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--tau-ink-1);
+}
+.tau-fakelink-look[aria-checked="true"] .tau-fakelink-look-name {
+  color: var(--tau-accent-text);
+  font-weight: 500;
+}
+.tau-fakelink-look-name small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--tau-ink-3);
+}
+.tau-fakelink-look-hint {
+  font-size: 11.5px;
+  color: var(--tau-ink-3);
+}
+
+.tau-fakelink-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.tau-fakelink-chip {
+  height: 28px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--tau-ink-2);
+  background: var(--tau-bg-surface);
+  border: 1px solid var(--tau-line-1);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background-color 0.14s,
+    border-color 0.14s,
+    color 0.14s;
+}
+.tau-fakelink-chip:hover:not(:disabled) {
+  background: var(--tau-bg-hover);
+  color: var(--tau-ink-1);
+}
+.tau-fakelink-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--tau-focus-ring);
+}
+.tau-fakelink-chip[aria-pressed="true"] {
+  color: var(--tau-accent-text);
+  background: var(--tau-accent-soft);
+  border-color: transparent;
+  font-weight: 500;
+}
+.tau-fakelink-chip:disabled {
+  cursor: default;
+}
+.tau-fakelink:disabled .tau-fakelink-chip,
+.tau-fakelink:disabled .tau-fakelink-look {
+  opacity: 0.6;
+  cursor: progress;
+}
+.tau-fakelink-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--tau-line-1);
+}
+
+.tau-fakelink-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--tau-ink-1);
+}
+.tau-fakelink-row + .tau-fakelink-row {
+  padding-top: 14px;
+  border-top: 1px solid var(--tau-line-2);
+}
+
+.tau-fakelink-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--tau-danger);
+  background: var(--tau-danger-soft);
+  border-radius: 10px;
 }

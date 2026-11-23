@@ -1,10 +1,51 @@
+import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { Button, Switch } from "@tau/ui";
 import { headingLevels } from "./headings";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { Button } from "@tau/ui";
-import type { PluginPageProps } from "@tau/plugins";
-import { defaults, kinds, labels, type Preferences } from "./preferences";
+import { appearances, defaults, kinds, labels, type Preferences } from "./preferences";
 import type { FakeLink } from "./runtime";
-import type { Target } from "./titles";
+import type { Appearance } from "./titles";
+
+const looks: Record<Appearance, { name: string; hint: string }> = {
+  reference: { name: "引用", hint: "正文色文字加点线" },
+  ghost: { name: "隐形", hint: "悬停或按住 ⌘ 才显出" },
+  marker: { name: "荧光笔", hint: "文字下沿淡色底" },
+  tint: { name: "着色", hint: "只改字色" },
+};
+
+function Group({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <section className="tau-fakelink-group">
+      <h3>{title}</h3>
+      {hint && <p className="tau-fakelink-hint">{hint}</p>}
+      {children}
+    </section>
+  );
+}
+
+function Chip({
+  on,
+  locked,
+  onToggle,
+  children,
+}: {
+  on: boolean;
+  locked?: boolean;
+  onToggle(next: boolean): void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="tau-fakelink-chip"
+      aria-pressed={on}
+      disabled={locked}
+      title={locked ? "至少保留一项" : undefined}
+      onClick={() => onToggle(!on)}
+    >
+      {children}
+    </button>
+  );
+}
 
 export function Settings({ runtime }: { runtime: FakeLink }) {
   useSyncExternalStore(runtime.subscribe, runtime.snapshot);
@@ -20,208 +61,157 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
       setSaving(false);
     }
   }
-  function choices<K extends keyof typeof labels>(
-    title: string,
-    options: readonly K[],
-    selected: readonly K[],
-    apply: (items: K[]) => Preferences
-  ) {
-    return (
-      <fieldset disabled={saving}>
-        <legend>{title}</legend>
-        {options.map(kind => (
-          <label key={kind}>
-            <input
-              type="checkbox"
-              checked={selected.includes(kind)}
-              disabled={selected.includes(kind) && selected.length === 1}
-              onChange={event =>
-                void save(
-                  apply(
-                    options.filter(item =>
-                      item === kind ? event.target.checked : selected.includes(item)
-                    )
-                  )
-                )
-              }
-            />
-            {labels[kind]}
-          </label>
-        ))}
-      </fieldset>
-    );
+  function toggle<K>(options: readonly K[], selected: readonly K[], item: K, on: boolean) {
+    return options.filter(option => (option === item ? on : selected.includes(option)));
   }
+  // 内容标题、小标题、正文短语至少保留一种。
+  const matchers = Number(preferences.matchTitle) + preferences.headingLevels.length + Number(preferences.matchBody);
+
   return (
-    <div className="tau-fakelink">
-      {choices("从哪里收录标题", defaults.targets, preferences.targets, targets => ({
-        ...preferences,
-        targets,
-      }))}
-      <fieldset disabled={saving}>
-        <legend>匹配方式</legend>
-        <label>
-          <input
-            type="checkbox"
-            checked={preferences.matchTitle}
-            disabled={!preferences.headingLevels.length && !preferences.matchBody}
-            onChange={event => void save({ ...preferences, matchTitle: event.target.checked })}
-          />
-          内容标题
-        </label>
-        {headingLevels.map(level => (
-          <label key={level}>
-            <input
-              type="checkbox"
-              checked={preferences.headingLevels.includes(level)}
-              disabled={
-                !preferences.matchTitle &&
-                !preferences.matchBody &&
-                preferences.headingLevels.length === 1 &&
-                preferences.headingLevels[0] === level
+    <fieldset className="tau-fakelink" disabled={saving}>
+      <Group title="显示方式" hint="识别出的标题在正文里怎么显示，不会改动原文。">
+        <div className="tau-fakelink-looks" role="radiogroup" aria-label="显示方式">
+          {appearances.map(id => (
+            <button
+              key={id}
+              type="button"
+              role="radio"
+              aria-checked={preferences.appearance === id}
+              className="tau-fakelink-look"
+              onClick={() => void save({ ...preferences, appearance: id })}
+            >
+              <span className="tau-fakelink-preview">
+                去读 <span data-tau-decoration={id}>遗忘曲线</span>
+              </span>
+              <span className="tau-fakelink-look-name">
+                {looks[id].name}
+                {id === defaults.appearance && <small>推荐</small>}
+              </span>
+              <span className="tau-fakelink-look-hint">{looks[id].hint}</span>
+            </button>
+          ))}
+        </div>
+      </Group>
+
+      <Group title="从哪里收录标题">
+        <div className="tau-fakelink-chips">
+          {defaults.targets.map(kind => (
+            <Chip
+              key={kind}
+              on={preferences.targets.includes(kind)}
+              locked={preferences.targets.length === 1 && preferences.targets[0] === kind}
+              onToggle={on =>
+                void save({ ...preferences, targets: toggle(defaults.targets, preferences.targets, kind, on) })
               }
-              onChange={event =>
-                void save({
-                  ...preferences,
-                  headingLevels: headingLevels.filter(item =>
-                    item === level ? event.target.checked : preferences.headingLevels.includes(item)
-                  ),
-                })
+            >
+              {labels[kind]}
+            </Chip>
+          ))}
+        </div>
+      </Group>
+
+      <Group title="从哪里收录正文">
+        <div className="tau-fakelink-chips">
+          {kinds.map(kind => (
+            <Chip
+              key={kind}
+              on={preferences.bodyTargets.includes(kind)}
+              locked={preferences.bodyTargets.length === 1 && preferences.bodyTargets[0] === kind}
+              onToggle={on =>
+                void save({ ...preferences, bodyTargets: toggle(kinds, preferences.bodyTargets, kind, on) })
               }
-            />
-            H{level}
-          </label>
-        ))}
-        <label>
-          <input
-            type="checkbox"
+            >
+              {labels[kind]}
+            </Chip>
+          ))}
+        </div>
+      </Group>
+
+      <Group title="在哪些正文显示">
+        <div className="tau-fakelink-chips">
+          {kinds.map(kind => (
+            <Chip
+              key={kind}
+              on={preferences.sources.includes(kind)}
+              locked={preferences.sources.length === 1 && preferences.sources[0] === kind}
+              onToggle={on =>
+                void save({ ...preferences, sources: toggle(kinds, preferences.sources, kind, on) })
+              }
+            >
+              {labels[kind]}
+            </Chip>
+          ))}
+        </div>
+      </Group>
+
+      <Group title="匹配什么" hint="小标题匹配以淡色显示，点击跳到对应小节。">
+        <div className="tau-fakelink-chips">
+          <Chip
+            on={preferences.matchTitle}
+            locked={preferences.matchTitle && matchers === 1}
+            onToggle={on => void save({ ...preferences, matchTitle: on })}
+          >
+            内容标题
+          </Chip>
+          <span className="tau-fakelink-divider" aria-hidden />
+          {headingLevels.map(level => {
+            const on = preferences.headingLevels.includes(level);
+            return (
+              <Chip
+                key={level}
+                on={on}
+                locked={on && matchers === 1}
+                onToggle={next =>
+                  void save({
+                    ...preferences,
+                    headingLevels: toggle(headingLevels, preferences.headingLevels, level, next),
+                  })
+                }
+              >
+                H{level}
+              </Chip>
+            );
+          })}
+        </div>
+        <div className="tau-fakelink-row">
+          <div>
+            <div>正文短语</div>
+            <p className="tau-fakelink-hint">标出与已收录内容共有的连续短语。</p>
+          </div>
+          <Switch
             checked={preferences.matchBody}
-            disabled={!preferences.matchTitle && !preferences.headingLevels.length}
-            onChange={event => {
-              const enabled = event.target.checked;
+            disabled={saving || (preferences.matchBody && matchers === 1)}
+            aria-label="正文短语"
+            onCheckedChange={enabled =>
               void save({
                 ...preferences,
                 matchBody: enabled,
-                sources: enabled
-                  ? [...new Set([...preferences.sources, "card" as const])]
-                  : preferences.sources,
-              });
-            }}
+              })
+            }
           />
-          卡片正文短语
-        </label>
-      </fieldset>
-      {choices("在哪些正文显示", kinds, preferences.sources, sources => ({
-        ...preferences,
-        sources,
-      }))}
-      <label>
-        链接外观{" "}
-        <select
-          value={preferences.appearance}
-          disabled={saving}
-          onChange={e =>
-            void save({
-              ...preferences,
-              appearance: e.target.value === "highlight" ? "highlight" : "link",
-            })
-          }
-        >
-          <option value="link">点状下划线</option>
-          <option value="highlight">背景高亮</option>
-        </select>
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={preferences.wordBoundaries}
-          disabled={saving}
-          onChange={e => void save({ ...preferences, wordBoundaries: e.target.checked })}
-        />
-        英文和数字只匹配完整单词
-      </label>
+        </div>
+        <div className="tau-fakelink-row">
+          <div>
+            <div>英文和数字只匹配完整单词</div>
+            <p className="tau-fakelink-hint">关闭后，「API」也会在「myAPI」里被识别。</p>
+          </div>
+          <Switch
+            checked={preferences.wordBoundaries}
+            disabled={saving}
+            aria-label="英文和数字只匹配完整单词"
+            onCheckedChange={on => void save({ ...preferences, wordBoundaries: on })}
+          />
+        </div>
+      </Group>
+
       {runtime.error && (
-        <div role="alert">
-          {runtime.error}{" "}
-          <Button disabled={saving} onClick={() => void runtime.rebuild().catch(() => {})}>
+        <div role="alert" className="tau-fakelink-error">
+          <span>{runtime.error}</span>
+          <Button size="sm" disabled={saving} onClick={() => void runtime.rebuild().catch(() => {})}>
             重新建立索引
           </Button>
         </div>
       )}
-    </div>
-  );
-}
-
-export function Candidates({
-  runtime,
-  params,
-}: {
-  runtime: FakeLink;
-  params: PluginPageProps["params"];
-}) {
-  const version = useSyncExternalStore(runtime.subscribe, runtime.snapshot);
-  const title = String(params.title ?? "");
-  const kind = params.kind === "document" || params.kind === "card" ? params.kind : "article";
-  const id = String(params.id ?? "");
-  const [rows, setRows] = useState<Target[] | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let current = true;
-    setRows(null);
-    setError("");
-    void runtime.candidates(title, { kind, id }).then(
-      result => {
-        if (current) setRows(result);
-      },
-      reason => {
-        if (current) setError(String(reason));
-      }
-    );
-    return () => {
-      current = false;
-    };
-  }, [runtime, version, title, kind, id]);
-  return (
-    <section className="tau-fakelink tau-fakelink-candidates">
-      <h2>{title}</h2>
-      {error && <p role="alert">{error}</p>}
-      {rows === null && !error && <p role="status">正在读取同名内容…</p>}
-      {rows?.length === 0 && <p>当前范围内已没有这个标题。</p>}
-      {rows?.map(row => (
-        <Button
-          key={JSON.stringify([row.kind, row.id, row.heading?.path])}
-          variant="ghost"
-          onClick={() =>
-            void runtime.open(title, { kind, id }, row).catch(reason => setError(String(reason)))
-          }
-        >
-          <span>
-            {labels[row.kind]} · {row.title || "无标题"}
-            {row.heading && ` › ${row.heading.text}`}
-          </span>
-          <small>
-            {[
-              ...(row.heading
-                ? [
-                    `H${row.heading.level} · 第 ${row.heading.block + 1} 块${
-                      row.heading.path.includes(".")
-                        ? "（位置 " +
-                          row.heading.path
-                            .split(".")
-                            .slice(1)
-                            .map(i => Number(i) + 1)
-                            .join(".") +
-                          "）"
-                        : ""
-                    }`,
-                  ]
-                : ["内容标题"]),
-              ...row.tags.map(tag => "#" + tag),
-              new Date(row.createdAt).toLocaleString(),
-              row.id,
-            ].join(" · ")}
-          </small>
-        </Button>
-      ))}
-    </section>
+    </fieldset>
   );
 }

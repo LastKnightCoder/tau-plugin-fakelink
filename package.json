@@ -1,6 +1,6 @@
 {
   "name": "tau-plugin-fakelink",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -14,7 +14,7 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@tau/plugins": "npm:@xiongtao.xt/tau-plugins@0.59.0",
+    "@tau/plugins": "npm:@xiongtao.xt/tau-plugins@0.60.0",
     "@tau/ui": "npm:@xiongtao.xt/tau-ui@0.6.0",
     "react": "19.2.0",
     "react-dom": "19.2.0"
