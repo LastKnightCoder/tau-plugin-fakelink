@@ -1,3 +1,4 @@
+import { readHeadings } from "./headings";
 import type {
   PluginContext,
   PluginDomainEvent,
@@ -16,7 +17,7 @@ const reader = (
   kind === "article" ? context.data.articles : context.data.documents;
 
 function toTarget(kind: TargetKind, row: PluginArticle | PluginDocument | null): Target | null {
-  if (!row?.title.trim() || ("kind" in row && !row.contentRef)) return null;
+  if (!row || ("kind" in row && !row.contentRef)) return null;
   return { kind, id: row.id, title: row.title.trim(), tags: row.tags, createdAt: row.createdAt };
 }
 
@@ -69,6 +70,23 @@ export class FakeLink {
     return new Set(kinds.filter((kind): kind is TargetKind => kind !== null));
   }
 
+  private async targetsFor(
+    kind: TargetKind,
+    row: PluginArticle | PluginDocument | null,
+    preferences: Preferences
+  ) {
+    const owner = toTarget(kind, row);
+    if (!row || !owner) return [];
+    const targets: Target[] = preferences.matchTitle && owner.title ? [owner] : [];
+    if (preferences.headingLevels.length && row.contentRef) {
+      const body = await this.context.content.read(row.contentRef, { format: "nodes" });
+      for (const heading of readHeadings(body?.nodes ?? [], preferences.headingLevels)) {
+        targets.push({ ...owner, heading });
+      }
+    }
+    return targets;
+  }
+
   async candidates(title: string, source: Source) {
     const allowed = await this.readableKinds();
     return this.index.candidates(title, source, allowed);
@@ -77,19 +95,34 @@ export class FakeLink {
   async open(title: string, source: Source, selected?: Target) {
     const candidates = await this.candidates(title, source);
     if (!selected && candidates.length > 1) return this.choose(title, source);
-    const row = selected
-      ? candidates.find(
-          item =>
-            item.id === selected.id &&
-            item.kind === selected.kind &&
-            item.createdAt === selected.createdAt
-        )
-      : candidates[0];
-    if (!row) throw new Error("这条标题已更改、被删除，或不在当前匹配范围内。");
-    const current = toTarget(row.kind, await reader(this.context, row.kind).get(row.id));
-    if (!current || current.createdAt !== row.createdAt || current.title !== title)
-      throw new Error("这条标题已经变化，请重新选择。");
-    await this.context.app.open({ kind: row.kind, id: row.id });
+    const chosen = selected ?? candidates[0];
+    if (
+      !chosen ||
+      !candidates.some(
+        item =>
+          item.kind === chosen.kind && item.id === chosen.id && item.createdAt === chosen.createdAt
+      )
+    )
+      throw new Error("这条标题已更改、被删除，或不在当前匹配范围内。");
+    const ref = { kind: chosen.kind, id: chosen.id };
+    const row = await reader(this.context, chosen.kind).get(chosen.id);
+    if (!row || row.createdAt !== chosen.createdAt) throw new Error("目标已删除，请重新选择。");
+    if (!chosen.heading) {
+      if (!this.preferences.matchTitle || row.title.trim() !== title)
+        throw new Error("内容标题已经变化，请重新选择。");
+      return this.context.app.open(ref);
+    }
+    // 点击时用最新正文确定块序号，前面插入段落后仍能跳到小标题。
+    const { heading } = chosen;
+    const matches = (await this.targetsFor(chosen.kind, row, this.preferences)).flatMap(item =>
+      item.heading?.level === heading.level && item.heading.text === title ? [item.heading] : []
+    );
+    const current = heading.nodeId
+      ? matches.find(h => h.nodeId === heading.nodeId)
+      : (matches.find(h => h.path === heading.path) ??
+        (matches.length === 1 ? matches[0] : undefined));
+    if (!current) throw new Error("小标题已移动、改名或删除，请重新选择。");
+    await this.context.app.open(ref, { at: { block: current.block } });
   }
 
   rebuild() {
@@ -102,7 +135,11 @@ export class FakeLink {
       const api = this.context.textDecorations;
       if (!api) throw new Error("当前 Tau 未提供文字装饰能力，请使用支持 FakeLink 的桌面版本。");
       const needsIndex =
-        !this.handle || force || next.targets.join() !== this.preferences.targets.join();
+        !this.handle ||
+        force ||
+        next.targets.join() !== this.preferences.targets.join() ||
+        next.matchTitle !== this.preferences.matchTitle ||
+        next.headingLevels.join() !== this.preferences.headingLevels.join();
       const needsRegistration =
         !this.handle || next.sources.join() !== this.preferences.sources.join();
       if (needsRegistration || needsIndex) {
@@ -123,8 +160,8 @@ export class FakeLink {
               cursor,
             });
             for (const row of page.items) {
-              const target = toTarget(kind, row);
-              if (target) index.update(target, target);
+              this.context.signal.throwIfAborted();
+              index.update({ kind, id: row.id }, await this.targetsFor(kind, row, next));
             }
             cursor = page.cursor;
           } while (cursor);
@@ -179,7 +216,9 @@ export class FakeLink {
       // 事件是变更提示，重新读取可以处理事务回滚及同一编号的连续变化。
       const row = await reader(this.context, kind).get(event.id);
       this.context.signal.throwIfAborted();
-      if (this.index.update({ kind, id: event.id }, toTarget(kind, row))) {
+      const targets = await this.targetsFor(kind, row, this.preferences);
+      this.context.signal.throwIfAborted();
+      if (this.index.update({ kind, id: event.id }, targets)) {
         this.handle?.invalidate();
         this.notify();
       }

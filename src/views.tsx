@@ -1,3 +1,4 @@
+import { headingLevels } from "./headings";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@tau/ui";
 import type { PluginPageProps } from "@tau/plugins";
@@ -56,6 +57,40 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
         ...preferences,
         targets,
       }))}
+      <fieldset disabled={saving}>
+        <legend>匹配哪些标题</legend>
+        <label>
+          <input
+            type="checkbox"
+            checked={preferences.matchTitle}
+            disabled={!preferences.headingLevels.length}
+            onChange={event => void save({ ...preferences, matchTitle: event.target.checked })}
+          />
+          内容标题
+        </label>
+        {headingLevels.map(level => (
+          <label key={level}>
+            <input
+              type="checkbox"
+              checked={preferences.headingLevels.includes(level)}
+              disabled={
+                !preferences.matchTitle &&
+                preferences.headingLevels.length === 1 &&
+                preferences.headingLevels[0] === level
+              }
+              onChange={event =>
+                void save({
+                  ...preferences,
+                  headingLevels: headingLevels.filter(item =>
+                    item === level ? event.target.checked : preferences.headingLevels.includes(item)
+                  ),
+                })
+              }
+            />
+            H{level}
+          </label>
+        ))}
+      </fieldset>
       {choices("在哪些正文显示", kinds, preferences.sources, sources => ({
         ...preferences,
         sources,
@@ -134,17 +169,33 @@ export function Candidates({
       {rows?.length === 0 && <p>当前范围内已没有这个标题。</p>}
       {rows?.map(row => (
         <Button
-          key={row.kind + ":" + row.id}
+          key={JSON.stringify([row.kind, row.id, row.heading?.path])}
           variant="ghost"
           onClick={() =>
             void runtime.open(title, { kind, id }, row).catch(reason => setError(String(reason)))
           }
         >
           <span>
-            {labels[row.kind]} · {row.title}
+            {labels[row.kind]} · {row.title || "无标题"}
+            {row.heading && ` › ${row.heading.text}`}
           </span>
           <small>
             {[
+              ...(row.heading
+                ? [
+                    `H${row.heading.level} · 第 ${row.heading.block + 1} 块${
+                      row.heading.path.includes(".")
+                        ? "（位置 " +
+                          row.heading.path
+                            .split(".")
+                            .slice(1)
+                            .map(i => Number(i) + 1)
+                            .join(".") +
+                          "）"
+                        : ""
+                    }`,
+                  ]
+                : ["内容标题"]),
               ...row.tags.map(tag => "#" + tag),
               new Date(row.createdAt).toLocaleString(),
               row.id,

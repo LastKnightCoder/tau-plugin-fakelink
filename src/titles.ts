@@ -1,3 +1,4 @@
+import type { Heading } from "./headings";
 export type TargetKind = "article" | "document";
 export type SourceKind = TargetKind | "card";
 export type Source = { kind: SourceKind; id: string };
@@ -5,6 +6,7 @@ export type Target = {
   kind: TargetKind;
   id: string;
   title: string;
+  heading?: Heading;
   tags: string[];
   createdAt: number;
 };
@@ -12,54 +14,64 @@ export type Appearance = "link" | "highlight";
 
 interface Branch {
   next: Map<string, Branch>;
-  targets: Map<string, Target>;
+  targets: Set<Target>;
 }
-const branch = (): Branch => ({ next: new Map(), targets: new Map() });
+const branch = (): Branch => ({ next: new Map(), targets: new Set() });
 const identity = (ref: Source) => ref.kind + ":" + ref.id;
 
 export class TitleIndex {
   private root = branch();
-  private entries = new Map<string, Target>();
+  private entries = new Map<string, Target[]>();
 
-  update(ref: Source, target: Target | null) {
+  update(ref: Source, targets: Target[]) {
     const id = identity(ref);
-    const previous = this.entries.get(id);
-    if (!previous && !target) return false;
+    const previous = this.entries.get(id) ?? [];
     if (
-      previous &&
-      target &&
-      previous.title === target.title &&
-      previous.createdAt === target.createdAt &&
-      previous.tags.length === target.tags.length &&
-      previous.tags.every((tag, i) => tag === target.tags[i])
+      previous.length === targets.length &&
+      previous.every((row, i) => {
+        const next = targets[i];
+        return (
+          row.title === next.title &&
+          row.createdAt === next.createdAt &&
+          row.heading?.text === next.heading?.text &&
+          row.heading?.level === next.heading?.level &&
+          row.heading?.path === next.heading?.path &&
+          row.heading?.nodeId === next.heading?.nodeId &&
+          row.tags.length === next.tags.length &&
+          row.tags.every((tag, j) => tag === next.tags[j])
+        );
+      })
     )
       return false;
-    if (previous) {
+
+    for (const target of previous) {
       let node = this.root;
       const path: [Branch, string][] = [];
-      for (let i = 0; i < previous.title.length; i++) {
-        const char = previous.title[i];
+      const term = target.heading?.text ?? target.title;
+      for (let i = 0; i < term.length; i++) {
+        const char = term[i];
         path.push([node, char]);
         node = node.next.get(char)!;
       }
-      node.targets.delete(id);
+      node.targets.delete(target);
       for (const [parent, char] of path.reverse()) {
         if (node.targets.size || node.next.size) break;
         parent.next.delete(char);
         node = parent;
       }
-      this.entries.delete(id);
     }
-    if (target) {
+    for (const target of targets) {
+      const term = target.heading?.text ?? target.title;
       let node = this.root;
-      for (let i = 0; i < target.title.length; i++) {
-        const char = target.title[i];
+      for (let i = 0; i < term.length; i++) {
+        const char = term[i];
         if (!node.next.has(char)) node.next.set(char, branch());
         node = node.next.get(char)!;
       }
-      node.targets.set(id, target);
-      this.entries.set(id, target);
+      node.targets.add(target);
     }
+    if (targets.length) this.entries.set(id, targets);
+    else this.entries.delete(id);
     return true;
   }
 
@@ -99,8 +111,8 @@ export class TitleIndex {
             (isWord(text[end]) && isWord(text[end + 1])))
         )
           continue;
-        for (const [id, target] of node.targets) {
-          if (id !== self && allowed.has(target.kind)) {
+        for (const target of node.targets) {
+          if (identity(target) !== self && allowed.has(target.kind)) {
             longest = end + 1;
             break;
           }
