@@ -1,5 +1,6 @@
+import { scopedTitles, selectMatches } from "./select-matches";
 import { BodyLibrary, bodyReader } from "./body-library";
-import { passagesOf, type BodyHit } from "./body-index";
+import { surroundingText, passagesOf, type BodyHit } from "./body-index";
 import { readHeadings } from "./headings";
 import type {
   PluginContext,
@@ -150,7 +151,7 @@ export class FakeLink {
     return allowed;
   }
 
-  async bodyHits(source: Source, phrase: string): Promise<BodyHit[]> {
+  async bodyHits(source: Source, phrase: string, around: string): Promise<BodyHit[]> {
     if (
       !this.preferences.matchBody ||
       !this.preferences.sources.includes(source.kind) ||
@@ -161,7 +162,8 @@ export class FakeLink {
       phrase,
       source,
       this.preferences.wordBoundaries,
-      await this.readableBodyKinds()
+      await this.readableBodyKinds(),
+      around
     );
   }
 
@@ -183,9 +185,9 @@ export class FakeLink {
   }
 
   private async options({ key, source }: PluginTextDecorationActivation) {
-    const [kind, term] = JSON.parse(key) as [string, string];
+    const [kind, term, around] = JSON.parse(key) as [string, string, string];
     if (kind === "title") {
-      return (await this.candidates(term, source)).map(target => ({
+      return scopedTitles(term, await this.candidates(term, source), around).map(target => ({
         candidate: candidateOf(target),
         target: {
           ref: { kind: target.kind, id: target.id },
@@ -194,7 +196,7 @@ export class FakeLink {
         open: () => this.openTitle(term, target),
       }));
     }
-    return (await this.bodyHits(source, term)).map(hit => ({
+    return (await this.bodyHits(source, term, around)).map(hit => ({
       candidate: {
         key: JSON.stringify([hit.kind, hit.id, hit.createdAt]),
         title: hit.title || labels[hit.kind],
@@ -289,7 +291,7 @@ export class FakeLink {
             getDecorations: async ({ source, text }, signal) => {
               const allowed = await this.readableKinds();
               if (signal.aborted) return [];
-              const titles: PluginTextDecoration[] = this.index
+              const candidates = this.index
                 .match(
                   text,
                   source,
@@ -297,49 +299,62 @@ export class FakeLink {
                   this.preferences.appearance,
                   this.preferences.wordBoundaries
                 )
-                .map(hit => ({
-                  ...hit,
-                  ...describe(hit.key, this.index.candidates(hit.key, source, allowed)),
-                  key: JSON.stringify(["title", hit.key]),
-                }));
+                .map(hit => {
+                  const before = text.slice(Math.max(0, hit.start - 160), hit.start);
+                  const targets = scopedTitles(
+                    hit.key,
+                    this.index.candidates(hit.key, source, allowed),
+                    before
+                  );
+                  const decoration: PluginTextDecoration = {
+                    ...hit,
+                    ...describe(hit.key, targets),
+                    key: JSON.stringify(["title", hit.key, before]),
+                  };
+                  return {
+                    hit: decoration,
+                    explicit: true,
+                    targets: targets.length,
+                    support: 0,
+                  };
+                });
               const allowedBodies = await this.readableBodyKinds();
-              if (!allowedBodies.size || signal.aborted) return titles;
+              if (signal.aborted) return [];
+              if (!allowedBodies.size) return selectMatches(text, candidates);
               const body = this.body.index.match(
                 text,
                 source,
                 this.preferences.wordBoundaries,
                 allowedBodies
               );
-              const titleCount = titles.length;
-              let nextTitle = 0;
-              const bodyLabels = new Map<string, string>();
               for (const hit of body) {
-                while (nextTitle < titleCount && titles[nextTitle].end <= hit.start) nextTitle++;
-                if (nextTitle < titleCount && titles[nextTitle].start < hit.end) continue;
-                let label = bodyLabels.get(hit.phrase);
-                if (!label) {
-                  const count = this.body.index.hits(
-                    hit.phrase,
-                    source,
-                    this.preferences.wordBoundaries,
-                    allowedBodies
-                  ).length;
-                  if (!count) continue;
-                  label =
-                    count > 1
-                      ? `匹配到 ${count} 处内容，点击选择`
-                      : `预览「${hit.phrase}」所在的段落`;
-                  bodyLabels.set(hit.phrase, label);
-                }
-                titles.push({
-                  start: hit.start,
-                  end: hit.end,
-                  key: JSON.stringify(["body", hit.phrase]),
-                  appearance: this.preferences.appearance,
-                  label,
+                const around = surroundingText(text, hit.start, hit.phrase);
+                const matches = this.body.index.hits(
+                  hit.phrase,
+                  source,
+                  this.preferences.wordBoundaries,
+                  allowedBodies,
+                  around
+                );
+                const count = matches.length;
+                if (!count) continue;
+                candidates.push({
+                  explicit: false,
+                  targets: count,
+                  support: matches[0].support,
+                  hit: {
+                    start: hit.start,
+                    end: hit.end,
+                    key: JSON.stringify(["body", hit.phrase, around]),
+                    appearance: this.preferences.appearance,
+                    label:
+                      count > 1
+                        ? `匹配到 ${count} 处内容，点击选择`
+                        : `预览「${hit.phrase}」所在的段落`,
+                  },
                 });
               }
-              return titles;
+              return selectMatches(text, candidates);
             },
             getPreview: async (action, signal) => {
               const options = await this.options(action);

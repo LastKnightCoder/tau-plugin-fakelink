@@ -103,7 +103,8 @@
     border-color 0.14s,
     color 0.14s;
 }
-.tau-fakelink-chip:hover:not(:disabled) {
+/* 选中的 chip 悬停时保持选中样式，点击后才能立刻看到结果。 */
+.tau-fakelink-chip:hover:not(:disabled, [aria-pressed="true"]) {
   background: var(--tau-bg-hover);
   color: var(--tau-ink-1);
 }
@@ -120,9 +121,9 @@
 .tau-fakelink-chip:disabled {
   cursor: default;
 }
-.tau-fakelink:disabled .tau-fakelink-chip,
-.tau-fakelink:disabled .tau-fakelink-look {
-  opacity: 0.6;
+/* 保存中只换光标：整块降透明度会读成闪烁。 */
+.tau-fakelink[aria-busy="true"] .tau-fakelink-chip,
+.tau-fakelink[aria-busy="true"] .tau-fakelink-look {
   cursor: progress;
 }
 .tau-fakelink-divider {

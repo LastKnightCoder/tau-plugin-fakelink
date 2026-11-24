@@ -49,16 +49,18 @@ function Chip({
 
 export function Settings({ runtime }: { runtime: FakeLink }) {
   useSyncExternalStore(runtime.subscribe, runtime.snapshot);
-  const [saving, setSaving] = useState(false);
-  const preferences = runtime.preferences;
+  // 保存中的目标偏好：configure 可能要重建完索引才更新 runtime.preferences，期间先按目标显示。
+  const [request, setRequest] = useState<Preferences | null>(null);
+  const preferences = request ?? runtime.preferences;
   async function save(next: Preferences) {
-    setSaving(true);
+    setRequest(next);
     try {
       await runtime.configure(next);
     } catch {
       /* runtime.error 供设置页显示 */
     } finally {
-      setSaving(false);
+      // 期间又有新点击时保留最新请求，界面不回退。
+      setRequest(current => (current === next ? null : current));
     }
   }
   function toggle<K>(options: readonly K[], selected: readonly K[], item: K, on: boolean) {
@@ -68,7 +70,7 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
   const matchers = Number(preferences.matchTitle) + preferences.headingLevels.length + Number(preferences.matchBody);
 
   return (
-    <fieldset className="tau-fakelink" disabled={saving}>
+    <fieldset className="tau-fakelink" aria-busy={request !== null}>
       <Group title="显示方式" hint="识别出的标题在正文里怎么显示，不会改动原文。">
         <div className="tau-fakelink-looks" role="radiogroup" aria-label="显示方式">
           {appearances.map(id => (
@@ -180,7 +182,7 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
           </div>
           <Switch
             checked={preferences.matchBody}
-            disabled={saving || (preferences.matchBody && matchers === 1)}
+            disabled={preferences.matchBody && matchers === 1}
             aria-label="正文短语"
             onCheckedChange={enabled =>
               void save({
@@ -197,7 +199,6 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
           </div>
           <Switch
             checked={preferences.wordBoundaries}
-            disabled={saving}
             aria-label="英文和数字只匹配完整单词"
             onCheckedChange={on => void save({ ...preferences, wordBoundaries: on })}
           />
@@ -207,7 +208,11 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
       {runtime.error && (
         <div role="alert" className="tau-fakelink-error">
           <span>{runtime.error}</span>
-          <Button size="sm" disabled={saving} onClick={() => void runtime.rebuild().catch(() => {})}>
+          <Button
+            size="sm"
+            disabled={request !== null}
+            onClick={() => void runtime.rebuild().catch(() => {})}
+          >
             重新建立索引
           </Button>
         </div>

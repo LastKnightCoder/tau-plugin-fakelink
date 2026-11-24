@@ -5,11 +5,13 @@ export interface Passage {
   text: string;
 }
 export interface IndexedBody {
+  tags?: readonly string[];
   title: string;
   createdAt: number;
   passages: Passage[];
 }
 export interface BodyHit {
+  support: number;
   kind: SourceKind;
   title: string;
   phrase: string;
@@ -72,7 +74,37 @@ const stop = new Set([
   "when",
 ]);
 
+const tokenizer = new Intl.Segmenter("zh", { granularity: "word" });
+function words(text: string) {
+  const distinct = new Set<string>();
+  let previousSingle = "";
+  for (const { segment, isWordLike } of tokenizer.segment(text)) {
+    // 词典外的中文术语有时被切成连续单字，例如“缓存”；保留相邻字对作证据。
+    const single = isWordLike && /^\p{Script=Han}$/u.test(segment);
+    if (single && previousSingle) distinct.add(previousSingle + segment);
+    previousSingle = single ? segment : "";
+    if (!isWordLike || segment.length < 2 || !/\p{L}/u.test(segment)) continue;
+    // 数量表达和句法助词即使在小库里少见，也不能独立说明主题。
+    if (
+      /^[零一二两三四五六七八九十几每这那某][个位种篇句项次条张些本处份]$/u.test(segment) ||
+      /^[的了]/u.test(segment)
+    )
+      continue;
+    distinct.add(segment.toLowerCase());
+  }
+  return distinct;
+}
+
+export function surroundingText(text: string, offset: number, phrase: string) {
+  return text
+    .slice(Math.max(0, offset - 48), offset + phrase.length + 48)
+    .split(phrase)
+    .join(" ");
+}
+
 interface Line {
+  tagWords: ReadonlySet<string>;
+  start: number;
   kind: SourceKind;
   title: string;
   id: string;
@@ -81,41 +113,90 @@ interface Line {
   text: string;
 }
 
+type Postings = Map<string, Line | Line[]>;
+
+// 高频按不同笔记计，每篇都分到一次校验机会；同一篇的重复段落均匀取样。
+function* sample(bucket: Postings | undefined) {
+  if (!bucket || bucket.size > maxPostings) return;
+  const limit = Math.floor(maxPostings / bucket.size);
+  for (const entry of bucket.values()) {
+    if (!Array.isArray(entry)) yield entry;
+    else {
+      const count = Math.min(limit, entry.length);
+      for (let i = 0; i < count; i++) yield entry[Math.floor((i * entry.length) / count)];
+    }
+  }
+}
+
 export class BodyIndex {
-  private postings = new Map<string, Set<Line>>();
-  private entries = new Map<string, Line[]>();
+  private postings = new Map<string, Postings>();
+  private entries = new Map<string, { seeds: Set<string>; words: Set<string> }>();
+  private frequencies = {
+    card: new Map<string, number>(),
+    article: new Map<string, number>(),
+    document: new Map<string, number>(),
+  };
+  private documents = { card: 0, article: 0, document: 0 };
 
   update(ref: Source, body: IndexedBody | null) {
     const key = ref.kind + ":" + ref.id;
-    for (const line of this.entries.get(key) ?? []) {
-      for (const [, seed] of seeds(line.text)) {
-        const bucket = this.postings.get(seed);
-        if (bucket?.delete(line) && !bucket.size) this.postings.delete(seed);
+    const previous = this.entries.get(key);
+    const frequency = this.frequencies[ref.kind];
+    if (previous) {
+      this.documents[ref.kind]--;
+      for (const word of previous.words) {
+        const remaining = frequency.get(word)! - 1;
+        if (remaining) frequency.set(word, remaining);
+        else frequency.delete(word);
       }
+    }
+    for (const seed of previous?.seeds ?? []) {
+      const bucket = this.postings.get(seed);
+      if (bucket?.delete(key) && !bucket.size) this.postings.delete(seed);
     }
     this.entries.delete(key);
     if (!body) return;
-    const lines: Line[] = [];
+    const indexedSeeds = new Set<string>();
+    const tagWords = words((body.tags ?? []).join(" "));
     for (const passage of body.passages) {
-      for (const [text] of runs(passage.text)) {
+      for (const run of runs(passage.text)) {
+        const text = run[0];
         if (text.length < 4) continue;
-        const line = { ...ref, title: body.title, createdAt: body.createdAt, passage, text };
-        lines.push(line);
+        const line = {
+          tagWords,
+          start: run.index!,
+          ...ref,
+          title: body.title,
+          createdAt: body.createdAt,
+          passage,
+          text,
+        };
+
         for (const [, seed] of seeds(text)) {
           let bucket = this.postings.get(seed);
           if (!bucket) {
-            bucket = new Set();
+            bucket = new Map();
             this.postings.set(seed, bucket);
           }
-          bucket.add(line);
+          indexedSeeds.add(seed);
+          const old = bucket.get(key);
+          if (!old) bucket.set(key, line);
+          else if (Array.isArray(old)) {
+            if (old.at(-1) !== line) old.push(line);
+          } else if (old !== line) bucket.set(key, [old, line]);
         }
       }
     }
-    this.entries.set(key, lines);
+    const vocabulary = new Set(tagWords);
+    for (const passage of body.passages)
+      for (const word of words(passage.text)) vocabulary.add(word);
+    for (const word of vocabulary) frequency.set(word, (frequency.get(word) ?? 0) + 1);
+    this.documents[ref.kind]++;
+    this.entries.set(key, { seeds: indexedSeeds, words: vocabulary });
   }
 
   private anchors(phrase: string) {
-    let smallest: Set<Line> | undefined;
+    let smallest: Postings | undefined;
     for (const [, seed] of seeds(phrase)) {
       const bucket = this.postings.get(seed);
       if (!bucket) return undefined;
@@ -128,40 +209,84 @@ export class BodyIndex {
     phrase: string,
     source: Source,
     wordBoundaries: boolean,
-    allowed: ReadonlySet<SourceKind>
+    allowed: ReadonlySet<SourceKind>,
+    context: string
   ): BodyHit[] {
+    const weights = new Map<string, number>();
+    const size = [...allowed].reduce((sum, kind) => sum + this.documents[kind], 0);
+    const phraseWords = words(phrase);
+    const idf = (word: string) => {
+      let df = 0;
+      for (const kind of allowed) df += this.frequencies[kind].get(word) ?? 0;
+      return Math.log2(1 + (size + 1) / (df + 1));
+    };
+    let sourceWeight = 0;
+    for (const word of words(context)) {
+      if (phraseWords.has(word)) continue;
+      const weight = idf(word);
+      weights.set(word, weight);
+      sourceWeight += weight;
+    }
+    if (!weights.size) return [];
+    // 一项约在 1/8 文档中出现的词，或两项较弱证据即可；小库仍允许重复主题形成连接。
+    const threshold = Math.log2(1 + (size + 1) / (Math.max(2, size / 8) + 1));
     const targets = new Map<string, BodyHit>();
-    for (const line of this.anchors(phrase) ?? []) {
+    for (const line of sample(this.anchors(phrase))) {
       const { kind, id, title, createdAt, passage } = line;
       const key = kind + ":" + id;
       if (
         !allowed.has(kind) ||
         (source.kind === kind && source.id === id) ||
-        targets.has(key) ||
         !line.text.includes(phrase)
       )
         continue;
-      let offset = line.text.indexOf(phrase);
-      while (
-        offset >= 0 &&
-        wordBoundaries &&
-        ((asciiWord(phrase[0]) && asciiWord(line.text[offset - 1])) ||
-          (asciiWord(phrase[phrase.length - 1]) && asciiWord(line.text[offset + phrase.length])))
-      )
+      let offset = -1;
+      for (let occurrence = 0; occurrence < 8; occurrence++) {
         offset = line.text.indexOf(phrase, offset + 1);
-      if (offset < 0) continue;
-      const at = passage.text.indexOf(line.text) + offset;
-      targets.set(key, {
-        kind,
-        title,
-        phrase,
-        id,
-        createdAt,
-        block: passage.block,
-        excerpt: passage.text.slice(Math.max(0, at - 35), at + phrase.length + 45),
-      });
+        if (offset < 0) break;
+        if (
+          wordBoundaries &&
+          ((asciiWord(phrase[0]) && asciiWord(line.text[offset - 1])) ||
+            (asciiWord(phrase[phrase.length - 1]) && asciiWord(line.text[offset + phrase.length])))
+        )
+          continue;
+        const at = line.start + offset;
+        const evidence = words(surroundingText(passage.text, at, phrase));
+        for (const word of line.tagWords) evidence.add(word);
+        let targetWeight = 0,
+          commonWeight = 0,
+          first = 0,
+          second = 0;
+        for (const word of evidence) {
+          if (phraseWords.has(word)) continue;
+          const weight = weights.get(word);
+          targetWeight += weight ?? idf(word);
+          if (weight === undefined) continue;
+          commonWeight += weight;
+          if (weight > first) {
+            second = first;
+            first = weight;
+          } else second = Math.max(second, weight);
+        }
+        // 长段落偶然共享一个少见词仍可能跨题，同时衡量共同证据在两边上下文中的占比。
+        const coverage = commonWeight / Math.sqrt(sourceWeight * targetWeight || 1);
+        const namedTopic = [...line.tagWords].some(word => (weights.get(word) ?? 0) >= threshold);
+        if (coverage < 0.1 && !namedTopic) continue;
+        const support = first + 0.5 * second;
+        if (support < threshold || (targets.get(key)?.support ?? 0) >= support) continue;
+        targets.set(key, {
+          kind,
+          title,
+          phrase,
+          id,
+          createdAt,
+          block: passage.block,
+          support,
+          excerpt: passage.text.slice(Math.max(0, at - 35), at + phrase.length + 45),
+        });
+      }
     }
-    return [...targets.values()].sort((a, b) => b.createdAt - a.createdAt);
+    return [...targets.values()].sort((a, b) => b.support - a.support || b.createdAt - a.createdAt);
   }
 
   match(text: string, source: Source, words: boolean, allowed: ReadonlySet<SourceKind>) {
@@ -178,7 +303,7 @@ export class BodyIndex {
         if (!bucket || bucket.size > maxPostings) continue;
         let bestStart = at,
           bestEnd = at;
-        for (const line of bucket) {
+        for (const line of sample(bucket)) {
           if (!allowed.has(line.kind) || (source.kind === line.kind && source.id === line.id))
             continue;
           let pos = -1;

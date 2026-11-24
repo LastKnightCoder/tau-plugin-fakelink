@@ -42,7 +42,12 @@ export class BodyLibrary {
     if (!row.contentRef) return null;
     const snapshot = await this.context.content.read(row.contentRef, { format: "nodes" });
     return snapshot
-      ? { title: row.title, createdAt: row.createdAt, passages: passagesOf(snapshot.nodes ?? []) }
+      ? {
+          title: row.title,
+          tags: row.tags,
+          createdAt: row.createdAt,
+          passages: passagesOf(snapshot.nodes ?? []),
+        }
       : null;
   }
 
