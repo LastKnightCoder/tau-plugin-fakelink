@@ -1,6 +1,6 @@
 # FakeLink 开发与构建
 
-项目使用 npm 上的 Tau 插件 SDK 0.60.0。在插件仓库根目录执行：
+项目使用 package.json 中固定的 npm 插件开发包。在插件仓库根目录执行：
 
 ```sh
 pnpm install --frozen-lockfile
