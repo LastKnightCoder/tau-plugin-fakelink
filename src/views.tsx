@@ -1,16 +1,19 @@
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { Button, Switch } from "@tau/ui";
+import { useI18n } from "@tau/plugins";
 import { headingLevels } from "./headings";
-import { appearances, defaults, kinds, labels, type Preferences } from "./preferences";
+import { appearances, defaults, kinds, type Preferences } from "./preferences";
+import { messages } from "./i18n";
 import type { FakeLink } from "./runtime";
 import type { Appearance } from "./titles";
 
-const looks: Record<Appearance, { name: string; hint: string }> = {
-  reference: { name: "引用", hint: "正文色文字加点线" },
-  ghost: { name: "隐形", hint: "悬停或按住 ⌘ 才显出" },
-  marker: { name: "荧光笔", hint: "文字下沿淡色底" },
-  tint: { name: "着色", hint: "只改字色" },
-};
+const lookKeys = {
+  reference: { name: "looks.reference.name", hint: "looks.reference.hint" },
+  ghost: { name: "looks.ghost.name", hint: "looks.ghost.hint" },
+  marker: { name: "looks.marker.name", hint: "looks.marker.hint" },
+  tint: { name: "looks.tint.name", hint: "looks.tint.hint" },
+} as const satisfies Record<Appearance, { name: string; hint: string }>;
+const kindKeys = { article: "kind.article", document: "kind.document", card: "kind.card" } as const;
 
 function Group({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -33,13 +36,14 @@ function Chip({
   onToggle(next: boolean): void;
   children: ReactNode;
 }) {
+  const { t } = useI18n(messages);
   return (
     <button
       type="button"
       className="tau-fakelink-chip"
       aria-pressed={on}
       disabled={locked}
-      title={locked ? "至少保留一项" : undefined}
+      title={locked ? t("chip.keepAtLeastOne") : undefined}
       onClick={() => onToggle(!on)}
     >
       {children}
@@ -48,6 +52,7 @@ function Chip({
 }
 
 export function Settings({ runtime }: { runtime: FakeLink }) {
+  const { t } = useI18n(messages);
   useSyncExternalStore(runtime.subscribe, runtime.snapshot);
   // 保存中的目标偏好：configure 可能要重建完索引才更新 runtime.preferences，期间先按目标显示。
   const [request, setRequest] = useState<Preferences | null>(null);
@@ -71,8 +76,8 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
 
   return (
     <fieldset className="tau-fakelink" aria-busy={request !== null}>
-      <Group title="显示方式" hint="识别出的标题在正文里怎么显示，不会改动原文。">
-        <div className="tau-fakelink-looks" role="radiogroup" aria-label="显示方式">
+      <Group title={t("group.appearance.title")} hint={t("group.appearance.hint")}>
+        <div className="tau-fakelink-looks" role="radiogroup" aria-label={t("group.appearance.title")}>
           {appearances.map(id => (
             <button
               key={id}
@@ -83,19 +88,20 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
               onClick={() => void save({ ...preferences, appearance: id })}
             >
               <span className="tau-fakelink-preview">
-                去读 <span data-tau-decoration={id}>遗忘曲线</span>
+                {t("looks.samplePrefix")}
+                <span data-tau-decoration={id}>{t("looks.sampleWord")}</span>
               </span>
               <span className="tau-fakelink-look-name">
-                {looks[id].name}
-                {id === defaults.appearance && <small>推荐</small>}
+                {t(lookKeys[id].name)}
+                {id === defaults.appearance && <small>{t("looks.recommended")}</small>}
               </span>
-              <span className="tau-fakelink-look-hint">{looks[id].hint}</span>
+              <span className="tau-fakelink-look-hint">{t(lookKeys[id].hint)}</span>
             </button>
           ))}
         </div>
       </Group>
 
-      <Group title="从哪里收录标题">
+      <Group title={t("group.targets.title")}>
         <div className="tau-fakelink-chips">
           {defaults.targets.map(kind => (
             <Chip
@@ -106,13 +112,13 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
                 void save({ ...preferences, targets: toggle(defaults.targets, preferences.targets, kind, on) })
               }
             >
-              {labels[kind]}
+              {t(kindKeys[kind])}
             </Chip>
           ))}
         </div>
       </Group>
 
-      <Group title="从哪里收录正文">
+      <Group title={t("group.body.title")}>
         <div className="tau-fakelink-chips">
           {kinds.map(kind => (
             <Chip
@@ -123,13 +129,13 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
                 void save({ ...preferences, bodyTargets: toggle(kinds, preferences.bodyTargets, kind, on) })
               }
             >
-              {labels[kind]}
+              {t(kindKeys[kind])}
             </Chip>
           ))}
         </div>
       </Group>
 
-      <Group title="在哪些正文显示">
+      <Group title={t("group.sources.title")}>
         <div className="tau-fakelink-chips">
           {kinds.map(kind => (
             <Chip
@@ -140,20 +146,20 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
                 void save({ ...preferences, sources: toggle(kinds, preferences.sources, kind, on) })
               }
             >
-              {labels[kind]}
+              {t(kindKeys[kind])}
             </Chip>
           ))}
         </div>
       </Group>
 
-      <Group title="匹配什么" hint="小标题匹配以淡色显示，点击跳到对应小节。">
+      <Group title={t("group.match.title")} hint={t("group.match.hint")}>
         <div className="tau-fakelink-chips">
           <Chip
             on={preferences.matchTitle}
             locked={preferences.matchTitle && matchers === 1}
             onToggle={on => void save({ ...preferences, matchTitle: on })}
           >
-            内容标题
+            {t("match.contentTitle")}
           </Chip>
           <span className="tau-fakelink-divider" aria-hidden />
           {headingLevels.map(level => {
@@ -177,13 +183,13 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
         </div>
         <div className="tau-fakelink-row">
           <div>
-            <div>正文短语</div>
-            <p className="tau-fakelink-hint">标出与已收录内容共有的连续短语。</p>
+            <div>{t("match.bodyPhrase")}</div>
+            <p className="tau-fakelink-hint">{t("match.bodyPhrase.hint")}</p>
           </div>
           <Switch
             checked={preferences.matchBody}
             disabled={preferences.matchBody && matchers === 1}
-            aria-label="正文短语"
+            aria-label={t("match.bodyPhrase")}
             onCheckedChange={enabled =>
               void save({
                 ...preferences,
@@ -194,12 +200,12 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
         </div>
         <div className="tau-fakelink-row">
           <div>
-            <div>英文和数字只匹配完整单词</div>
-            <p className="tau-fakelink-hint">关闭后，「API」也会在「myAPI」里被识别。</p>
+            <div>{t("match.wordBoundaries")}</div>
+            <p className="tau-fakelink-hint">{t("match.wordBoundaries.hint")}</p>
           </div>
           <Switch
             checked={preferences.wordBoundaries}
-            aria-label="英文和数字只匹配完整单词"
+            aria-label={t("match.wordBoundaries")}
             onCheckedChange={on => void save({ ...preferences, wordBoundaries: on })}
           />
         </div>
@@ -213,7 +219,7 @@ export function Settings({ runtime }: { runtime: FakeLink }) {
             disabled={request !== null}
             onClick={() => void runtime.rebuild().catch(() => {})}
           >
-            重新建立索引
+            {t("settings.retry")}
           </Button>
         </div>
       )}

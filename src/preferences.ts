@@ -11,7 +11,6 @@ export interface Preferences {
   wordBoundaries: boolean;
 }
 export const kinds = ["article", "document", "card"] as const;
-export const labels = { article: "文章", document: "项目文档", card: "卡片" };
 export const defaults: Preferences = {
   matchTitle: true,
   matchBody: false,

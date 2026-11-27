@@ -1,4 +1,5 @@
 import { definePlugin } from "@tau/plugins";
+import { messages } from "./i18n";
 import { FakeLink } from "./runtime";
 import { readPreferences } from "./preferences";
 import { Settings } from "./views";
@@ -8,6 +9,7 @@ declare const __PLUGIN_META__: { id: string; name: string; version: string };
 
 export default definePlugin({
   ...__PLUGIN_META__,
+  i18n: messages,
   create: () => ({
     async activate(context) {
       if (!context.textDecorations)
@@ -16,7 +18,7 @@ export default definePlugin({
       const runtime = new FakeLink(context, preferences);
       const settings = context.settings.register({
         id: "preferences",
-        title: "虚拟链接",
+        title: messages.ref("settings.title"),
         component: () => <Settings runtime={runtime} />,
       });
       context.events.on(
@@ -36,7 +38,7 @@ export default definePlugin({
       );
       context.commands.register({
         id: "rebuild",
-        title: "FakeLink：重新建立索引",
+        title: messages.ref("command.rebuild"),
         run: async () => {
           await runtime.rebuild();
           return null;
@@ -46,10 +48,12 @@ export default definePlugin({
       void runtime.rebuild().catch(() => {
         if (!context.signal.aborted)
           context.notifications.send({
-            title: "FakeLink 尚未开始匹配",
+            title: context.i18n.t("notify.rebuildFailed.title"),
             body: runtime.error,
             mode: "in-app",
-            actions: [{ label: "打开设置", onClick: () => settings.open() }],
+            actions: [
+              { label: context.i18n.t("notify.openSettings"), onClick: () => settings.open() },
+            ],
           });
       });
     },

@@ -14,8 +14,12 @@ import type {
   PluginTextDecorationActivation,
   PluginDecorationPreviewTarget,
 } from "@tau/plugins";
-import { TitleIndex, type Source, type Target, type TargetKind } from "./titles";
-import { labels, type Preferences } from "./preferences";
+import { TitleIndex, type Source, type SourceKind, type Target, type TargetKind } from "./titles";
+import { type Preferences } from "./preferences";
+
+type Translate = PluginContext["i18n"]["t"];
+const kindKeys = { article: "kind.article", document: "kind.document", card: "kind.card" } as const;
+const kindLabel = (t: Translate, kind: SourceKind) => t(kindKeys[kind]);
 
 const reader = (
   context: PluginContext,
@@ -31,13 +35,17 @@ function toTarget(kind: TargetKind, row: PluginArticle | PluginDocument | null):
 const targetKey = (target: Target) =>
   JSON.stringify([target.kind, target.id, target.createdAt, target.heading?.path ?? null]);
 
-function candidateOf(target: Target): PluginTextDecorationCandidate {
+function candidateOf(t: Translate, target: Target): PluginTextDecorationCandidate {
   const where = target.heading
-    ? `${labels[target.kind]}《${target.title || "无标题"}》· H${target.heading.level}`
-    : labels[target.kind];
+    ? t("deco.headingWhere", {
+        kind: kindLabel(t, target.kind),
+        title: target.title || t("deco.untitled"),
+        level: target.heading.level,
+      })
+    : kindLabel(t, target.kind);
   return {
     key: targetKey(target),
-    title: target.heading?.text ?? (target.title || "无标题"),
+    title: target.heading?.text ?? (target.title || t("deco.untitled")),
     description: [
       where,
       ...target.tags.map(tag => "#" + tag),
@@ -47,14 +55,18 @@ function candidateOf(target: Target): PluginTextDecorationCandidate {
 }
 
 // 只匹配到小标题时用淡色，和内容标题区分开。
-function describe(title: string, targets: readonly Target[]) {
+function describe(t: Translate, title: string, targets: readonly Target[]) {
   const tone = targets.length && targets.every(target => target.heading) ? "muted" : undefined;
   if (targets.length !== 1)
-    return { tone, label: `${targets.length} 个同名内容，点击选择` } as const;
+    return { tone, label: t("deco.ambiguous", { count: targets.length }) } as const;
   const [target] = targets;
   const label = target.heading
-    ? `跳到${labels[target.kind]}《${target.title || "无标题"}》的「${title}」`
-    : `打开${labels[target.kind]}《${title}》`;
+    ? t("deco.jumpHeading", {
+        kind: kindLabel(t, target.kind),
+        title: target.title || t("deco.untitled"),
+        heading: title,
+      })
+    : t("deco.openTarget", { kind: kindLabel(t, target.kind), title });
   return { tone, label } as const;
 }
 
@@ -188,7 +200,7 @@ export class FakeLink {
     const [kind, term, around] = JSON.parse(key) as [string, string, string];
     if (kind === "title") {
       return scopedTitles(term, await this.candidates(term, source), around).map(target => ({
-        candidate: candidateOf(target),
+        candidate: candidateOf(this.context.i18n.t, target),
         target: {
           ref: { kind: target.kind, id: target.id },
           ...(target.heading ? { at: { block: target.heading.block } } : {}),
@@ -199,8 +211,8 @@ export class FakeLink {
     return (await this.bodyHits(source, term, around)).map(hit => ({
       candidate: {
         key: JSON.stringify([hit.kind, hit.id, hit.createdAt]),
-        title: hit.title || labels[hit.kind],
-        description: `${labels[hit.kind]} · ${hit.excerpt}`,
+        title: hit.title || kindLabel(this.context.i18n.t, hit.kind),
+        description: `${kindLabel(this.context.i18n.t, hit.kind)} · ${hit.excerpt}`,
       },
       target: {
         ref: { kind: hit.kind, id: hit.id },
@@ -308,7 +320,7 @@ export class FakeLink {
                   );
                   const decoration: PluginTextDecoration = {
                     ...hit,
-                    ...describe(hit.key, targets),
+                    ...describe(this.context.i18n.t, hit.key, targets),
                     key: JSON.stringify(["title", hit.key, before]),
                   };
                   return {
